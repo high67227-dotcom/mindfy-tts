@@ -901,4 +901,4 @@ def build_ui():
 
 if __name__ == "__main__":
     demo, theme, css = build_ui()
-    demo.launch(theme=theme, css=css)
+    demo.launch(theme=theme, css=css, show_error=True)
