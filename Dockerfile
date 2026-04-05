@@ -9,9 +9,10 @@ RUN apt-get update && apt-get install -y ffmpeg
 # Копируем код
 COPY . /app
 
-# Устанавливаем зависимости (gradio_client нам больше не нужен)
+# Устанавливаем зависимости
 RUN pip install -r requirements.txt
-RUN pip install runpod scipy
+# ДОБАВЛЯЕМ librosa и soundfile для чтения твоих mp3-голосов
+RUN pip install runpod scipy librosa soundfile
 
-# Запускаем ТОЛЬКО наш новый обработчик (без app.py)
+# Запускаем ТОЛЬКО наш новый обработчик
 CMD python handler.py
