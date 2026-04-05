@@ -46,6 +46,10 @@ def generate_audio(job):
         )
         
         raw_path = result[0] if isinstance(result, (list, tuple)) else result
+        status_msg = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else "Неизвестно"
+        
+        if raw_path is None:
+            raise Exception(f"ОШИБКА ОТ НЕЙРОСЕТИ: {status_msg}")
         
         # Упаковываем готовое аудио обратно в Base64
         with open(raw_path, "rb") as f:
