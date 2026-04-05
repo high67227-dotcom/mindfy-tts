@@ -1,4 +1,4 @@
-# Берем более свежую коробку: PyTorch 2.2.0 и CUDA 12.1
+# Берем свежую мощную коробку: PyTorch 2.2.0 и CUDA 12.1
 FROM runpod/pytorch:2.2.0-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 WORKDIR /app
@@ -6,12 +6,12 @@ WORKDIR /app
 # Устанавливаем системный пакет ffmpeg для работы с аудио
 RUN apt-get update && apt-get install -y ffmpeg
 
-# Копируем код нейросети
+# Копируем код
 COPY . /app
 
-# Устанавливаем Python библиотеки
+# Устанавливаем зависимости (gradio_client нам больше не нужен)
 RUN pip install -r requirements.txt
-RUN pip install runpod gradio_client
+RUN pip install runpod scipy
 
-# Запускаем нейросеть и обработчик
-CMD python app.py & python handler.py
+# Запускаем ТОЛЬКО наш новый обработчик (без app.py)
+CMD python handler.py
