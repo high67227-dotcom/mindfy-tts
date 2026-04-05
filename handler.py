@@ -1,85 +1,64 @@
+import time
 import runpod
 import base64
-import io
-import torch
-import numpy as np
-import scipy.io.wavfile as wavfile
-from qwen_tts import Qwen3TTSModel
-import re
 import tempfile
 import os
-import librosa
+from gradio_client import Client, handle_file
 
-print("Загрузка модели Qwen3-TTS Base (Voice Clone) в память...")
-model = Qwen3TTSModel.from_pretrained(
-    "Qwen/Qwen3-TTS-12Hz-1.7B-Base", # Возвращаем версию Base для клонирования
-    device_map="cuda",
-    dtype=torch.bfloat16,
-)
-print("Модель загружена!")
+print("⏳ Ожидание запуска нейросети Qwen3-TTS...")
+client = None
+# Ждем, пока локальный интерфейс нейросети запустится (до 60 секунд)
+for i in range(30):
+    try:
+        client = Client("http://127.0.0.1:7860")
+        print("✅ Нейросеть готова к работе!")
+        break
+    except Exception:
+        time.sleep(2)
 
-def chunk_text(text: str) -> list:
-    sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    return [s for s in sentences if s.strip()]
+if not client:
+    raise Exception("❌ Не удалось запустить локальный Gradio")
 
-def decode_audio(b64_str):
-    # Временно сохраняем и читаем аудио
-    audio_bytes = base64.b64decode(b64_str)
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
-        
-    wav, sr = librosa.load(tmp_path, sr=None)
-    os.unlink(tmp_path)
-    return wav, sr
+def generate_audio(job):
+    job_input = job["input"]
+    text = job_input.get("text")
+    ref_audio_b64 = job_input.get("ref_audio_base64")
+    ref_text = job_input.get("ref_text", "")
 
-def handler(job):
-    job_input = job['input']
-    text = job_input.get('text', '')
-    ref_audio_base64 = job_input.get('ref_audio_base64', '')
-    ref_text = job_input.get('ref_text', '')
-    
-    if not text or not ref_audio_base64:
-        yield {"error": "Нет текста или референсного аудио"}
-        return
+    # Распаковываем аудио из Base64 во временный файл
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_ref:
+        temp_ref.write(base64.b64decode(ref_audio_b64))
+        temp_ref_path = temp_ref.name
 
     try:
-        ref_wav, ref_sr = decode_audio(ref_audio_base64)
-        ref_audio_tuple = (ref_sr, ref_wav)
-    except Exception as e:
-        yield {"error": f"Ошибка аудио: {e}"}
-        return
-
-    chunks = chunk_text(text)
-    
-    for i, chunk in enumerate(chunks):
-        try:
-            # ИСПРАВЛЕНО: Убрали non_streaming_mode, добавили max_new_tokens
-            wav_data, sr = model.generate_voice_clone(
-                text=chunk,
-                language="Auto",
-                ref_audio=ref_audio_tuple,
-                ref_text=ref_text,
-                x_vector_only_mode=False,
-                max_new_tokens=2048
-            )
+        # Отправляем запрос в локальную нейросеть
+        result = client.predict(
+            ref_audio=handle_file(temp_ref_path),
+            ref_text=ref_text,
+            target_text=text,
+            language="Auto",
+            use_xvector_only=True,
+            model_size="1.7B",
+            max_chunk_chars=200,
+            chunk_gap=0.0,
+            seed=-1,
+            api_name="/generate_voice_clone",
+        )
+        
+        raw_path = result[0] if isinstance(result, (list, tuple)) else result
+        status_msg = result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else "Неизвестно"
+        
+        if raw_path is None:
+            raise Exception(f"ОШИБКА ОТ НЕЙРОСЕТИ: {status_msg}")
+        
+        # Упаковываем готовое аудио обратно в Base64
+        with open(raw_path, "rb") as f:
+            output_base64 = base64.b64encode(f.read()).decode('utf-8')
             
-            byte_io = io.BytesIO()
-            wavfile.write(byte_io, sr, wav_data[0])
-            audio_bytes = byte_io.getvalue()
-            chunk_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-            
-            yield {
-                "chunk_index": i,
-                "audio_base64": chunk_base64,
-                "is_final": i == (len(chunks) - 1)
-            }
-        except Exception as e:
-            # ИСПРАВЛЕНО: Теперь ошибка будет громко выводиться в логи RunPod
-            print(f"🔥 ОШИБКА ГЕНЕРАЦИИ ВНУТРИ RUNPOD: {str(e)}")
-            yield {"error": str(e)}
+        return {"audio_base64": output_base64}
+        
+    finally:
+        os.remove(temp_ref_path)
 
-runpod.serverless.start({
-    "handler": handler,
-    "return_aggregate_stream": True
-})
+# Запускаем прослушивание Serverless запросов
+runpod.serverless.start({"handler": generate_audio})
