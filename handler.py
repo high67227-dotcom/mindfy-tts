@@ -54,14 +54,14 @@ def handler(job):
     
     for i, chunk in enumerate(chunks):
         try:
-            # Используем правильную функцию клонирования!
+            # ИСПРАВЛЕНО: Убрали non_streaming_mode, добавили max_new_tokens
             wav_data, sr = model.generate_voice_clone(
                 text=chunk,
                 language="Auto",
                 ref_audio=ref_audio_tuple,
                 ref_text=ref_text,
                 x_vector_only_mode=False,
-                non_streaming_mode=True
+                max_new_tokens=2048
             )
             
             byte_io = io.BytesIO()
@@ -75,6 +75,8 @@ def handler(job):
                 "is_final": i == (len(chunks) - 1)
             }
         except Exception as e:
+            # ИСПРАВЛЕНО: Теперь ошибка будет громко выводиться в логи RunPod
+            print(f"🔥 ОШИБКА ГЕНЕРАЦИИ ВНУТРИ RUNPOD: {str(e)}")
             yield {"error": str(e)}
 
 runpod.serverless.start({
