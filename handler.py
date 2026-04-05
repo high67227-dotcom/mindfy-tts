@@ -4,65 +4,80 @@ import io
 import torch
 import numpy as np
 import scipy.io.wavfile as wavfile
-from qwen_tts import Qwen3TTSModel # Импортируем движок напрямую!
+from qwen_tts import Qwen3TTSModel
 import re
+import tempfile
+import os
+import librosa
 
-# 1. ЗАГРУЖАЕМ МОДЕЛЬ ОДИН РАЗ ПРИ СТАРТЕ СЕРВЕРА
-print("Загрузка модели Qwen3-TTS в память...")
+print("Загрузка модели Qwen3-TTS Base (Voice Clone) в память...")
 model = Qwen3TTSModel.from_pretrained(
-    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", # Берем CustomVoice, так как он быстрый
+    "Qwen/Qwen3-TTS-12Hz-1.7B-Base", # Возвращаем версию Base для клонирования
     device_map="cuda",
     dtype=torch.bfloat16,
 )
-print("Модель загружена успешно!")
+print("Модель загружена!")
 
 def chunk_text(text: str) -> list:
-    """Бьем текст на предложения прям внутри видеокарты"""
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     return [s for s in sentences if s.strip()]
 
-# 2. ФУНКЦИЯ ОБРАБОТКИ ПОТОКА
+def decode_audio(b64_str):
+    # Временно сохраняем и читаем аудио
+    audio_bytes = base64.b64decode(b64_str)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+        
+    wav, sr = librosa.load(tmp_path, sr=None)
+    os.unlink(tmp_path)
+    return wav, sr
+
 def handler(job):
     job_input = job['input']
     text = job_input.get('text', '')
-    speaker = job_input.get('speaker', 'johndoe')
+    ref_audio_base64 = job_input.get('ref_audio_base64', '')
+    ref_text = job_input.get('ref_text', '')
     
-    if not text:
-        return {"error": "Пустой текст"}
+    if not text or not ref_audio_base64:
+        yield {"error": "Нет текста или референсного аудио"}
+        return
+
+    try:
+        ref_wav, ref_sr = decode_audio(ref_audio_base64)
+        ref_audio_tuple = (ref_sr, ref_wav)
+    except Exception as e:
+        yield {"error": f"Ошибка аудио: {e}"}
+        return
 
     chunks = chunk_text(text)
     
-    # 3. ГЕНЕРИРУЕМ И СРАЗУ ОТДАЕМ (YIELD)
     for i, chunk in enumerate(chunks):
         try:
-            # Прямой вызов нейросети (без Gradio!)
-            wav_data, sr = model.generate_custom_voice(
+            # Используем правильную функцию клонирования!
+            wav_data, sr = model.generate_voice_clone(
                 text=chunk,
                 language="Auto",
-                speaker=speaker,
+                ref_audio=ref_audio_tuple,
+                ref_text=ref_text,
+                x_vector_only_mode=False,
                 non_streaming_mode=True
             )
             
-            # Запаковываем сырые данные в WAV-байты в оперативной памяти (без диска)
             byte_io = io.BytesIO()
             wavfile.write(byte_io, sr, wav_data[0])
             audio_bytes = byte_io.getvalue()
-            
-            # Кодируем в Base64 для безопасной передачи
             chunk_base64 = base64.b64encode(audio_bytes).decode('utf-8')
             
-            # МАГИЯ RUNPOD: Отдаем готовый кусок налету!
             yield {
                 "chunk_index": i,
                 "audio_base64": chunk_base64,
                 "is_final": i == (len(chunks) - 1)
             }
-            
         except Exception as e:
             yield {"error": str(e)}
 
-# Запускаем Serverless с поддержкой генераторов (return_aggregate_stream)
 runpod.serverless.start({
     "handler": handler,
-    "return_aggregate_stream": True # Это включает режим стриминга!
+    "return_aggregate_stream": True
 })
